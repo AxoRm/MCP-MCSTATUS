@@ -9,6 +9,8 @@ MCP server (Python) with tools for `https://mcstatus.xyz/api`.
 - `get_bedrock_status` - Bedrock status shortcut, endpoint `/api/status`
 - `get_srv_records` - SRV records, endpoint `/api/srv`
 - `resolve_dns` - DNS resolution and provider info, endpoint `/api/dns`
+- `rdns` - reverse DNS (PTR) lookup for IP
+- `geoip_maxmind` - GeoIP lookup using local MaxMind GeoLite2 database
 - `get_bgp_info` - BGP/ASN details for an IP, endpoint `/api/bgp`
 
 ## Architecture
@@ -81,6 +83,10 @@ Allowed `MCP_TRANSPORT` values: `stdio`, `sse`, `streamable-http`.
 - `MCP_PORT` - port for HTTP transports (default: `8000`)
 - `MCP_STREAMABLE_HTTP_PATH` - streamable HTTP path (default: `/mcp`)
 - `MCP_SSE_PATH` - SSE path (default: `/sse`)
+- `MAXMIND_LICENSE_KEY` - MaxMind license key for GeoLite2 download (required for auto-download if DB is missing/outdated)
+- `MAXMIND_DB_PATH` - local path to `.mmdb` file (default: `data/GeoLite2-City.mmdb`)
+- `MAXMIND_EDITION_ID` - MaxMind edition ID (default: `GeoLite2-City`)
+- `MAXMIND_REFRESH_HOURS` - database refresh interval in hours; `0` disables periodic refresh (default: `24`)
 
 ## Use With OpenAI
 
@@ -121,6 +127,8 @@ response = client.responses.create(
                 "get_bedrock_status",
                 "get_srv_records",
                 "resolve_dns",
+                "rdns",
+                "geoip_maxmind",
                 "get_bgp_info",
             ],
         }

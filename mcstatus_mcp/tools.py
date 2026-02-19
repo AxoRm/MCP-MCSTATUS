@@ -149,6 +149,22 @@ class ResolveDnsTool(BaseMCStatusTool):
         return self._structured(self.api_client.resolve_dns(host=host, timeout_ms=timeout_ms))
 
 
+class ReverseDnsTool(BaseMCStatusTool):
+    name = "rdns"
+    description = "Reverse DNS (PTR) lookup for an IP address."
+
+    def invoke(self, ip: str, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> dict[str, Any]:
+        return self._structured(self.api_client.get_reverse_dns(ip=ip, timeout_ms=timeout_ms))
+
+
+class GeoIpMaxMindTool(BaseMCStatusTool):
+    name = "geoip_maxmind"
+    description = "GeoIP lookup by IP using local MaxMind GeoLite2 database."
+
+    def invoke(self, ip: str, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> dict[str, Any]:
+        return self._structured(self.api_client.get_geoip_maxmind(ip=ip, timeout_ms=timeout_ms))
+
+
 class BgpInfoTool(BaseMCStatusTool):
     name = "get_bgp_info"
     description = "Get BGP details for an IP via mcstatus.xyz /api/bgp."
@@ -164,5 +180,7 @@ def build_default_tools(api_client: MCStatusApiClient) -> list[BaseMCStatusTool]
         BedrockStatusTool(api_client),
         SrvRecordsTool(api_client),
         ResolveDnsTool(api_client),
+        ReverseDnsTool(api_client),
+        GeoIpMaxMindTool(api_client),
         BgpInfoTool(api_client),
     ]

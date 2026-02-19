@@ -214,3 +214,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local MaxMind GeoIP database
+data/
+*.mmdb
