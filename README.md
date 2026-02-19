@@ -11,6 +11,7 @@ MCP server (Python) with tools for `https://mcstatus.xyz/api`.
 - `resolve_dns` - DNS resolution and provider info, endpoint `/api/dns`
 - `rdns` - reverse DNS (PTR) lookup for IP
 - `geoip_maxmind` - GeoIP lookup using local MaxMind GeoLite2 database
+- `get_ip_provider_info` - provider/operator info for IP via `bgp.tools` whois + ASN database
 - `get_bgp_info` - BGP/ASN details for an IP, endpoint `/api/bgp`
 
 ## Architecture
@@ -87,6 +88,12 @@ Allowed `MCP_TRANSPORT` values: `stdio`, `sse`, `streamable-http`.
 - `MAXMIND_DB_PATH` - local path to `.mmdb` file (default: `data/GeoLite2-City.mmdb`)
 - `MAXMIND_EDITION_ID` - MaxMind edition ID (default: `GeoLite2-City`)
 - `MAXMIND_REFRESH_HOURS` - database refresh interval in hours; `0` disables periodic refresh (default: `24`)
+- `BGPTOOLS_USER_AGENT` - descriptive user-agent with contact for downloading `https://bgp.tools/asns.csv` (recommended)
+- `BGPTOOLS_ASN_DB_URL` - ASN CSV source URL (default: `https://bgp.tools/asns.csv`)
+- `BGPTOOLS_ASN_DB_PATH` - local path to ASN CSV cache (default: `data/bgp_tools_asns.csv`)
+- `BGPTOOLS_ASN_REFRESH_HOURS` - ASN CSV refresh interval in hours; `0` disables periodic refresh (default: `24`)
+- `BGPTOOLS_WHOIS_HOST` - bgp.tools whois host (default: `bgp.tools`)
+- `BGPTOOLS_WHOIS_PORT` - bgp.tools whois port (default: `43`)
 
 ## Use With OpenAI
 
@@ -129,6 +136,7 @@ response = client.responses.create(
                 "resolve_dns",
                 "rdns",
                 "geoip_maxmind",
+                "get_ip_provider_info",
                 "get_bgp_info",
             ],
         }

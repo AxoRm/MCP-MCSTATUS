@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import ipaddress
 import io
 import json
@@ -31,6 +32,11 @@ DEFAULT_MAXMIND_EDITION_ID = "GeoLite2-City"
 DEFAULT_MAXMIND_REFRESH_HOURS = 24
 MAXMIND_DOWNLOAD_URL = "https://download.maxmind.com/app/geoip_download"
 MAXMIND_SOURCE_NAME = "maxmind-geolite2-city"
+DEFAULT_BGPTOOLS_ASN_DB_URL = "https://bgp.tools/asns.csv"
+DEFAULT_BGPTOOLS_ASN_DB_PATH = "data/bgp_tools_asns.csv"
+DEFAULT_BGPTOOLS_ASN_REFRESH_HOURS = 24
+DEFAULT_BGPTOOLS_WHOIS_HOST = "bgp.tools"
+DEFAULT_BGPTOOLS_WHOIS_PORT = 43
 
 
 class MCStatusApiError(RuntimeError):
@@ -48,13 +54,27 @@ class MCStatusApiClient:
         maxmind_license_key: str | None = None,
         maxmind_edition_id: str = DEFAULT_MAXMIND_EDITION_ID,
         maxmind_refresh_hours: int = DEFAULT_MAXMIND_REFRESH_HOURS,
+        bgptools_asn_db_url: str = DEFAULT_BGPTOOLS_ASN_DB_URL,
+        bgptools_asn_db_path: str = DEFAULT_BGPTOOLS_ASN_DB_PATH,
+        bgptools_asn_refresh_hours: int = DEFAULT_BGPTOOLS_ASN_REFRESH_HOURS,
+        bgptools_user_agent: str | None = None,
+        bgptools_whois_host: str = DEFAULT_BGPTOOLS_WHOIS_HOST,
+        bgptools_whois_port: int = DEFAULT_BGPTOOLS_WHOIS_PORT,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.default_timeout_ms = self.validate_timeout_ms(default_timeout_ms)
         self.maxmind_db_path = Path(maxmind_db_path).expanduser()
         self.maxmind_license_key = (maxmind_license_key or "").strip()
         self.maxmind_edition_id = maxmind_edition_id.strip() or DEFAULT_MAXMIND_EDITION_ID
-        self.maxmind_refresh_hours = self.validate_maxmind_refresh_hours(maxmind_refresh_hours)
+        self.maxmind_refresh_hours = self.validate_refresh_hours(maxmind_refresh_hours, field_name="maxmind_refresh_hours")
+        self.bgptools_asn_db_url = bgptools_asn_db_url.strip() or DEFAULT_BGPTOOLS_ASN_DB_URL
+        self.bgptools_asn_db_path = Path(bgptools_asn_db_path).expanduser()
+        self.bgptools_asn_refresh_hours = self.validate_refresh_hours(
+            bgptools_asn_refresh_hours, field_name="bgptools_asn_refresh_hours"
+        )
+        self.bgptools_user_agent = (bgptools_user_agent or "").strip()
+        self.bgptools_whois_host = bgptools_whois_host.strip() or DEFAULT_BGPTOOLS_WHOIS_HOST
+        self.bgptools_whois_port = self.validate_port(bgptools_whois_port)
 
     @classmethod
     def from_environment(cls) -> MCStatusApiClient:
@@ -72,6 +92,20 @@ class MCStatusApiClient:
             maxmind_refresh_hours = int(refresh_raw)
         except ValueError as exc:
             raise ValueError("MAXMIND_REFRESH_HOURS must be an integer.") from exc
+        bgptools_asn_db_url = os.getenv("BGPTOOLS_ASN_DB_URL", DEFAULT_BGPTOOLS_ASN_DB_URL)
+        bgptools_asn_db_path = os.getenv("BGPTOOLS_ASN_DB_PATH", DEFAULT_BGPTOOLS_ASN_DB_PATH)
+        bgptools_refresh_raw = os.getenv("BGPTOOLS_ASN_REFRESH_HOURS", str(DEFAULT_BGPTOOLS_ASN_REFRESH_HOURS))
+        try:
+            bgptools_asn_refresh_hours = int(bgptools_refresh_raw)
+        except ValueError as exc:
+            raise ValueError("BGPTOOLS_ASN_REFRESH_HOURS must be an integer.") from exc
+        bgptools_user_agent = os.getenv("BGPTOOLS_USER_AGENT")
+        bgptools_whois_host = os.getenv("BGPTOOLS_WHOIS_HOST", DEFAULT_BGPTOOLS_WHOIS_HOST)
+        bgptools_whois_port_raw = os.getenv("BGPTOOLS_WHOIS_PORT", str(DEFAULT_BGPTOOLS_WHOIS_PORT))
+        try:
+            bgptools_whois_port = int(bgptools_whois_port_raw)
+        except ValueError as exc:
+            raise ValueError("BGPTOOLS_WHOIS_PORT must be an integer.") from exc
         return cls(
             base_url=base_url,
             default_timeout_ms=timeout_ms,
@@ -79,6 +113,12 @@ class MCStatusApiClient:
             maxmind_license_key=maxmind_license_key,
             maxmind_edition_id=maxmind_edition_id,
             maxmind_refresh_hours=maxmind_refresh_hours,
+            bgptools_asn_db_url=bgptools_asn_db_url,
+            bgptools_asn_db_path=bgptools_asn_db_path,
+            bgptools_asn_refresh_hours=bgptools_asn_refresh_hours,
+            bgptools_user_agent=bgptools_user_agent,
+            bgptools_whois_host=bgptools_whois_host,
+            bgptools_whois_port=bgptools_whois_port,
         )
 
     @staticmethod
@@ -103,10 +143,10 @@ class MCStatusApiClient:
         return value
 
     @staticmethod
-    def validate_maxmind_refresh_hours(refresh_hours: int) -> int:
+    def validate_refresh_hours(refresh_hours: int, *, field_name: str = "refresh_hours") -> int:
         value = int(refresh_hours)
         if value < 0:
-            raise ValueError("`maxmind_refresh_hours` must be >= 0.")
+            raise ValueError(f"`{field_name}` must be >= 0.")
         return value
 
     @staticmethod
@@ -279,6 +319,166 @@ class MCStatusApiClient:
             return name
         return None
 
+    def _bgptools_asn_db_should_refresh(self) -> bool:
+        if not self.bgptools_asn_db_path.exists():
+            return True
+        if self.bgptools_asn_refresh_hours == 0:
+            return False
+        max_age_seconds = self.bgptools_asn_refresh_hours * 3600
+        file_age_seconds = max(0.0, time.time() - self.bgptools_asn_db_path.stat().st_mtime)
+        return file_age_seconds >= max_age_seconds
+
+    def _download_bgptools_asn_database(self, timeout_ms: int) -> None:
+        user_agent = self.bgptools_user_agent
+        if not user_agent:
+            raise MCStatusApiError(
+                "BGPTOOLS_USER_AGENT is required to download ASN database from bgp.tools."
+            )
+
+        request = Request(
+            self.bgptools_asn_db_url,
+            headers={
+                "User-Agent": user_agent,
+                "Accept": "text/csv, text/plain, */*",
+            },
+        )
+        timeout_s = timeout_ms / 1000.0
+        try:
+            with urlopen(request, timeout=timeout_s) as response:
+                payload = response.read()
+        except HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            raise MCStatusApiError(
+                f"bgp.tools ASN database download failed with HTTP {exc.code}: {body}"
+            ) from exc
+        except URLError as exc:
+            raise MCStatusApiError(f"Unable to reach bgp.tools ASN database endpoint: {exc.reason}") from exc
+        except TimeoutError as exc:
+            raise MCStatusApiError("bgp.tools ASN database download timed out.") from exc
+
+        text = payload.decode("utf-8", errors="replace")
+        if "Requests from default user agents are not allowed" in text:
+            raise MCStatusApiError(
+                "bgp.tools rejected User-Agent. Set BGPTOOLS_USER_AGENT to a descriptive value with contact."
+            )
+        if "asn,name,class,cc" not in text:
+            raise MCStatusApiError("bgp.tools ASN database payload has unexpected format.")
+
+        self.bgptools_asn_db_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = self.bgptools_asn_db_path.with_suffix(f"{self.bgptools_asn_db_path.suffix}.tmp")
+        try:
+            with temp_path.open("wb") as target:
+                target.write(payload)
+            temp_path.replace(self.bgptools_asn_db_path)
+        finally:
+            if temp_path.exists():
+                temp_path.unlink(missing_ok=True)
+
+    def _ensure_bgptools_asn_database(self, timeout_ms: int) -> tuple[Path, bool]:
+        if self.bgptools_asn_db_path.exists():
+            if not self._bgptools_asn_db_should_refresh():
+                return self.bgptools_asn_db_path, False
+            if not self.bgptools_user_agent:
+                # Keep serving stale DB when refresh is requested but User-Agent is absent.
+                return self.bgptools_asn_db_path, False
+        self._download_bgptools_asn_database(timeout_ms=timeout_ms)
+        if not self.bgptools_asn_db_path.exists():
+            raise MCStatusApiError("bgp.tools ASN database download did not produce a usable file.")
+        return self.bgptools_asn_db_path, True
+
+    def _query_bgptools_whois(self, query: str, timeout_ms: int) -> str:
+        timeout_s = timeout_ms / 1000.0
+        try:
+            with socket.create_connection((self.bgptools_whois_host, self.bgptools_whois_port), timeout=timeout_s) as conn:
+                conn.settimeout(timeout_s)
+                conn.sendall((query.strip() + "\n").encode("utf-8"))
+                chunks: list[bytes] = []
+                while True:
+                    try:
+                        chunk = conn.recv(4096)
+                    except socket.timeout:
+                        break
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+        except TimeoutError as exc:
+            raise MCStatusApiError("bgp.tools whois request timed out.") from exc
+        except OSError as exc:
+            raise MCStatusApiError(f"Unable to query bgp.tools whois: {exc}") from exc
+
+        result = b"".join(chunks).decode("utf-8", errors="replace").strip()
+        if not result:
+            raise MCStatusApiError("bgp.tools whois returned empty response.")
+        return result
+
+    @staticmethod
+    def _parse_bgptools_whois_ip_row(whois_text: str) -> dict[str, Any] | None:
+        lines = [line.strip() for line in whois_text.splitlines() if line.strip()]
+        for line in lines:
+            if "|" not in line:
+                continue
+            if line.lower().startswith("as"):
+                continue
+
+            parts = [part.strip() for part in line.split("|")]
+            if len(parts) < 7:
+                continue
+
+            asn_raw = parts[0].upper().replace("AS", "").strip()
+            asn: int | None = None
+            if asn_raw.isdigit():
+                asn = int(asn_raw)
+
+            return {
+                "asn": asn,
+                "ip": parts[1] or None,
+                "bgp_prefix": parts[2] or None,
+                "cc": parts[3] or None,
+                "registry": parts[4] or None,
+                "allocated": parts[5] or None,
+                "as_name": "|".join(parts[6:]).strip() or None,
+                "raw_row": line,
+            }
+        return None
+
+    def _lookup_bgptools_asn_record(self, asn: int, timeout_ms: int) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+        details: dict[str, Any] = {
+            "url": self.bgptools_asn_db_url,
+            "path": str(self.bgptools_asn_db_path),
+            "downloaded_now": False,
+            "mtime_epoch": None,
+            "error": None,
+        }
+        try:
+            db_path, downloaded = self._ensure_bgptools_asn_database(timeout_ms=timeout_ms)
+            details["path"] = str(db_path)
+            details["downloaded_now"] = downloaded
+            details["mtime_epoch"] = int(db_path.stat().st_mtime)
+        except MCStatusApiError as exc:
+            details["error"] = str(exc)
+            return None, details
+
+        target = f"AS{asn}"
+        try:
+            with db_path.open("r", encoding="utf-8", newline="") as handle:
+                reader = csv.DictReader(handle)
+                for row in reader:
+                    row_asn = (row.get("asn") or "").strip().upper()
+                    if row_asn != target:
+                        continue
+                    return {
+                        "asn": asn,
+                        "as_number": target,
+                        "name": (row.get("name") or "").strip() or None,
+                        "class": (row.get("class") or "").strip() or None,
+                        "cc": (row.get("cc") or "").strip() or None,
+                    }, details
+        except OSError as exc:
+            details["error"] = f"Failed to read ASN database: {exc}"
+            return None, details
+
+        return None, details
+
     def get_minecraft_status(
         self,
         host: str,
@@ -338,6 +538,62 @@ class MCStatusApiClient:
             params={"ip": safe_ip},
             timeout_ms=safe_timeout_ms,
         )
+
+    def get_ip_provider_info(self, ip: str, timeout_ms: int | None = None) -> dict[str, Any]:
+        safe_ip = self.validate_ip(ip)
+        safe_timeout_ms = self.default_timeout_ms if timeout_ms is None else self.validate_timeout_ms(timeout_ms)
+        payload: dict[str, Any] = {
+            "ok": False,
+            "ip": safe_ip,
+            "source": "bgp.tools",
+            "provider": None,
+            "asn": None,
+        }
+
+        try:
+            whois_text = self._query_bgptools_whois(query=safe_ip, timeout_ms=safe_timeout_ms)
+        except MCStatusApiError as exc:
+            payload["error"] = str(exc)
+            return payload
+
+        whois_row = self._parse_bgptools_whois_ip_row(whois_text)
+        if whois_row is None:
+            payload["error"] = "bgp.tools whois returned an unexpected payload format."
+            payload["whois_raw"] = whois_text
+            return payload
+
+        asn = whois_row.get("asn")
+        asn_db_record: dict[str, Any] | None = None
+        asn_db_details: dict[str, Any] = {
+            "url": self.bgptools_asn_db_url,
+            "path": str(self.bgptools_asn_db_path),
+            "downloaded_now": False,
+            "mtime_epoch": None,
+            "error": "ASN not present in bgp.tools whois response.",
+        }
+        if isinstance(asn, int):
+            asn_db_record, asn_db_details = self._lookup_bgptools_asn_record(asn=asn, timeout_ms=safe_timeout_ms)
+
+        provider = None
+        if asn_db_record is not None:
+            provider = asn_db_record.get("name")
+        if not provider:
+            provider = whois_row.get("as_name")
+
+        payload["ok"] = True
+        payload["provider"] = provider
+        payload["asn"] = asn
+        payload["as_name"] = whois_row.get("as_name")
+        payload["bgp_prefix"] = whois_row.get("bgp_prefix")
+        payload["cc"] = whois_row.get("cc")
+        payload["registry"] = whois_row.get("registry")
+        payload["allocated"] = whois_row.get("allocated")
+        payload["whois_host"] = self.bgptools_whois_host
+        payload["whois_port"] = self.bgptools_whois_port
+        payload["whois_row"] = whois_row.get("raw_row")
+        payload["asn_database"] = asn_db_details
+        payload["asn_database_record"] = asn_db_record
+        return payload
 
     def get_reverse_dns(self, ip: str, timeout_ms: int | None = None) -> dict[str, Any]:
         safe_ip = self.validate_ip(ip)

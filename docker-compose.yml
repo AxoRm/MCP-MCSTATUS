@@ -21,3 +21,6 @@ services:
       MAXMIND_DB_PATH: /app/data/GeoLite2-City.mmdb
       MAXMIND_EDITION_ID: GeoLite2-City
       MAXMIND_REFRESH_HOURS: "24"
+      BGPTOOLS_USER_AGENT: ${BGPTOOLS_USER_AGENT:-}
+      BGPTOOLS_ASN_DB_PATH: /app/data/bgp_tools_asns.csv
+      BGPTOOLS_ASN_REFRESH_HOURS: "24"

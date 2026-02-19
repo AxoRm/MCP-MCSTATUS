@@ -21,8 +21,8 @@ def _env_int(name: str, default: int) -> int:
 mcp = FastMCP(
     name="mcstatus-mcp",
     instructions=(
-        "Tools for Minecraft server status, DNS/BGP, reverse DNS, and MaxMind GeoIP lookups. "
-        "Use these tools whenever host status, DNS/SRV, BGP, PTR, or IP geolocation info is needed."
+        "Tools for Minecraft server status, DNS/BGP, reverse DNS, MaxMind GeoIP, and IP provider lookups. "
+        "Use these tools whenever host status, DNS/SRV, BGP, PTR, provider, or IP geolocation info is needed."
     ),
     host=os.getenv("MCP_HOST", "127.0.0.1"),
     port=_env_int("MCP_PORT", 8000),

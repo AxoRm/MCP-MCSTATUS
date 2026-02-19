@@ -165,6 +165,14 @@ class GeoIpMaxMindTool(BaseMCStatusTool):
         return self._structured(self.api_client.get_geoip_maxmind(ip=ip, timeout_ms=timeout_ms))
 
 
+class IpProviderInfoTool(BaseMCStatusTool):
+    name = "get_ip_provider_info"
+    description = "Get IP provider info via bgp.tools whois and ASN database."
+
+    def invoke(self, ip: str, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> dict[str, Any]:
+        return self._structured(self.api_client.get_ip_provider_info(ip=ip, timeout_ms=timeout_ms))
+
+
 class BgpInfoTool(BaseMCStatusTool):
     name = "get_bgp_info"
     description = "Get BGP details for an IP via mcstatus.xyz /api/bgp."
@@ -182,5 +190,6 @@ def build_default_tools(api_client: MCStatusApiClient) -> list[BaseMCStatusTool]
         ResolveDnsTool(api_client),
         ReverseDnsTool(api_client),
         GeoIpMaxMindTool(api_client),
+        IpProviderInfoTool(api_client),
         BgpInfoTool(api_client),
     ]
