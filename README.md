@@ -12,6 +12,7 @@ MCP server (Python) with tools for `https://mcstatus.xyz/api`.
 - `rdns` - reverse DNS (PTR) lookup for IP
 - `geoip_maxmind` - GeoIP lookup using local MaxMind GeoLite2 database
 - `get_ip_provider_info` - provider/operator info for IP via `bgp.tools` whois + ASN database
+- `is_ip_anycast` - check if player IP is Anycast by curated known-node list
 - `get_bgp_info` - BGP/ASN details for an IP, endpoint `/api/bgp`
 
 ## Architecture
@@ -137,6 +138,7 @@ response = client.responses.create(
                 "rdns",
                 "geoip_maxmind",
                 "get_ip_provider_info",
+                "is_ip_anycast",
                 "get_bgp_info",
             ],
         }

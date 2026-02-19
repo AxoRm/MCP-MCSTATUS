@@ -173,6 +173,17 @@ class IpProviderInfoTool(BaseMCStatusTool):
         return self._structured(self.api_client.get_ip_provider_info(ip=ip, timeout_ms=timeout_ms))
 
 
+class IsIpAnycastTool(BaseMCStatusTool):
+    name = "is_ip_anycast"
+    description = (
+        "Check whether an IP is an Anycast node using the curated known-node list. "
+        "Use this when proxy protocol and bungee modes are disabled."
+    )
+
+    def invoke(self, ip: str, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> dict[str, Any]:
+        return self._structured(self.api_client.is_ip_anycast(ip=ip, timeout_ms=timeout_ms))
+
+
 class BgpInfoTool(BaseMCStatusTool):
     name = "get_bgp_info"
     description = "Get BGP details for an IP via mcstatus.xyz /api/bgp."
@@ -191,5 +202,6 @@ def build_default_tools(api_client: MCStatusApiClient) -> list[BaseMCStatusTool]
         ReverseDnsTool(api_client),
         GeoIpMaxMindTool(api_client),
         IpProviderInfoTool(api_client),
+        IsIpAnycastTool(api_client),
         BgpInfoTool(api_client),
     ]

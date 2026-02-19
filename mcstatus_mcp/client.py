@@ -37,6 +37,15 @@ DEFAULT_BGPTOOLS_ASN_DB_PATH = "data/bgp_tools_asns.csv"
 DEFAULT_BGPTOOLS_ASN_REFRESH_HOURS = 24
 DEFAULT_BGPTOOLS_WHOIS_HOST = "bgp.tools"
 DEFAULT_BGPTOOLS_WHOIS_PORT = 43
+KNOWN_ANYCAST_PLAYER_NODES: dict[str, str] = {
+    "169.150.255.56": "Германия",
+    "143.244.45.11": "Украина",
+    "185.9.145.68": "Москва DDoSGuard",
+    "194.39.67.137": "Алматы",
+    "79.127.249.68": "Стокгольм",
+    "143.20.155.0": "Польша",
+    "185.17.10.91": "Москва Селектел",
+}
 
 
 class MCStatusApiError(RuntimeError):
@@ -593,6 +602,26 @@ class MCStatusApiClient:
         payload["whois_row"] = whois_row.get("raw_row")
         payload["asn_database"] = asn_db_details
         payload["asn_database_record"] = asn_db_record
+        return payload
+
+    def is_ip_anycast(self, ip: str, timeout_ms: int | None = None) -> dict[str, Any]:
+        safe_ip = self.validate_ip(ip)
+        _ = self.default_timeout_ms if timeout_ms is None else self.validate_timeout_ms(timeout_ms)
+
+        known_node_label = KNOWN_ANYCAST_PLAYER_NODES.get(safe_ip)
+        matched_known_list = known_node_label is not None
+
+        payload: dict[str, Any] = {
+            "ok": True,
+            "ip": safe_ip,
+            "is_anycast": matched_known_list,
+            "matched_known_anycast_list": matched_known_list,
+            "known_anycast_label": known_node_label,
+            "detection_sources": ["known_anycast_list"] if matched_known_list else [],
+            "detection_mode": "known_list_only",
+            "bgp_anycast_by_upstreams_used_for_detection": False,
+        }
+
         return payload
 
     def get_reverse_dns(self, ip: str, timeout_ms: int | None = None) -> dict[str, Any]:
