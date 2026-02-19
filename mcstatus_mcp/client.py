@@ -5,6 +5,7 @@ import ipaddress
 import io
 import json
 import os
+import re
 import shutil
 import socket
 import tarfile
@@ -22,6 +23,7 @@ except ImportError:  # pragma: no cover - handled at runtime
     maxminddb = None
 
 DEFAULT_API_BASE_URL = "https://mcstatus.xyz/api"
+DEFAULT_KUMA_API_BASE_URL = "http://status.dsts.cloud:3001/api"
 DEFAULT_TIMEOUT_MS = 4000
 JAVA_DEFAULT_PORT = 25565
 BEDROCK_DEFAULT_PORT = 19132
@@ -49,15 +51,16 @@ KNOWN_ANYCAST_PLAYER_NODES: dict[str, str] = {
 
 
 class MCStatusApiError(RuntimeError):
-    """Error returned when mcstatus.xyz request fails."""
+    """Error returned when upstream API request fails."""
 
 
 class MCStatusApiClient:
-    """Typed client wrapper around mcstatus.xyz endpoints."""
+    """Typed client wrapper around mcstatus.xyz and Kuma endpoints."""
 
     def __init__(
         self,
         base_url: str = DEFAULT_API_BASE_URL,
+        kuma_api_base_url: str = DEFAULT_KUMA_API_BASE_URL,
         default_timeout_ms: int = DEFAULT_TIMEOUT_MS,
         maxmind_db_path: str = DEFAULT_MAXMIND_DB_PATH,
         maxmind_license_key: str | None = None,
@@ -71,6 +74,7 @@ class MCStatusApiClient:
         bgptools_whois_port: int = DEFAULT_BGPTOOLS_WHOIS_PORT,
     ) -> None:
         self.base_url = base_url.rstrip("/")
+        self.kuma_api_base_url = kuma_api_base_url.rstrip("/")
         self.default_timeout_ms = self.validate_timeout_ms(default_timeout_ms)
         self.maxmind_db_path = Path(maxmind_db_path).expanduser()
         self.maxmind_license_key = (maxmind_license_key or "").strip()
@@ -88,6 +92,7 @@ class MCStatusApiClient:
     @classmethod
     def from_environment(cls) -> MCStatusApiClient:
         base_url = os.getenv("MCSTATUS_API_BASE_URL", DEFAULT_API_BASE_URL)
+        kuma_api_base_url = os.getenv("KUMA_API_BASE_URL", DEFAULT_KUMA_API_BASE_URL)
         timeout_raw = os.getenv("MCSTATUS_TIMEOUT_MS", str(DEFAULT_TIMEOUT_MS))
         try:
             timeout_ms = int(timeout_raw)
@@ -117,6 +122,7 @@ class MCStatusApiClient:
             raise ValueError("BGPTOOLS_WHOIS_PORT must be an integer.") from exc
         return cls(
             base_url=base_url,
+            kuma_api_base_url=kuma_api_base_url,
             default_timeout_ms=timeout_ms,
             maxmind_db_path=maxmind_db_path,
             maxmind_license_key=maxmind_license_key,
@@ -186,10 +192,27 @@ class MCStatusApiClient:
         except ValueError as exc:
             raise ValueError("`ip` must be a valid IPv4 or IPv6 address.") from exc
 
-    def _request_json(self, path: str, params: dict[str, Any], timeout_ms: int | None = None) -> dict[str, Any]:
+    @staticmethod
+    def validate_node_name(node_name: str) -> str:
+        value = node_name.strip()
+        if not value:
+            raise ValueError("`node_name` must be a non-empty string.")
+        return value
+
+    def _request_json_with_base(
+        self,
+        *,
+        base_url: str,
+        source_name: str,
+        path: str,
+        params: dict[str, Any],
+        timeout_ms: int | None = None,
+    ) -> dict[str, Any]:
         safe_timeout_ms = self.default_timeout_ms if timeout_ms is None else self.validate_timeout_ms(timeout_ms)
         query = urlencode(params)
-        url = f"{self.base_url}/{path.lstrip('/')}?{query}"
+        url = f"{base_url.rstrip('/')}/{path.lstrip('/')}"
+        if query:
+            url = f"{url}?{query}"
         request = Request(
             url,
             headers={
@@ -205,21 +228,30 @@ class MCStatusApiClient:
         except HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
             raise MCStatusApiError(
-                f"mcstatus API returned HTTP {exc.code} for {path}: {body}"
+                f"{source_name} returned HTTP {exc.code} for {path}: {body}"
             ) from exc
         except URLError as exc:
-            raise MCStatusApiError(f"Unable to reach mcstatus API for {path}: {exc.reason}") from exc
+            raise MCStatusApiError(f"Unable to reach {source_name} for {path}: {exc.reason}") from exc
         except TimeoutError as exc:
-            raise MCStatusApiError(f"Request to mcstatus API timed out for {path}.") from exc
+            raise MCStatusApiError(f"Request to {source_name} timed out for {path}.") from exc
 
         try:
             result = json.loads(payload)
         except json.JSONDecodeError as exc:
-            raise MCStatusApiError("mcstatus API returned invalid JSON.") from exc
+            raise MCStatusApiError(f"{source_name} returned invalid JSON.") from exc
 
         if not isinstance(result, dict):
-            raise MCStatusApiError("mcstatus API returned unexpected payload type.")
+            raise MCStatusApiError(f"{source_name} returned unexpected payload type.")
         return result
+
+    def _request_json(self, path: str, params: dict[str, Any], timeout_ms: int | None = None) -> dict[str, Any]:
+        return self._request_json_with_base(
+            base_url=self.base_url,
+            source_name="mcstatus API",
+            path=path,
+            params=params,
+            timeout_ms=timeout_ms,
+        )
 
     @staticmethod
     def _sanitize_status_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -487,6 +519,152 @@ class MCStatusApiClient:
             return None, details
 
         return None, details
+
+    @staticmethod
+    def _map_kuma_status(status_code: Any) -> str:
+        if status_code == 1:
+            return "UP"
+        if status_code == 0:
+            return "DOWN"
+        if status_code == 2:
+            return "PENDING"
+        return "MAINTENANCE"
+
+    @staticmethod
+    def _normalize_alias(value: str) -> str:
+        return "".join(char for char in value.strip().lower() if char.isalnum())
+
+    @classmethod
+    def _match_kuma_node_name(cls, query_name: str, monitor_name: str) -> tuple[int, str] | None:
+        query_raw = query_name.strip()
+        query_lower = query_raw.lower()
+        query_normalized = cls._normalize_alias(query_raw)
+        monitor_lower = monitor_name.strip().lower()
+        monitor_head = monitor_lower.split(".", 1)[0]
+        monitor_head_tokens = [token for token in re.split(r"[\s_-]+", monitor_head) if token]
+        monitor_head_normalized = cls._normalize_alias(monitor_head)
+        monitor_head_token_normalized: set[str] = set()
+        for token in monitor_head_tokens:
+            normalized = cls._normalize_alias(token)
+            if normalized:
+                monitor_head_token_normalized.add(normalized)
+        monitor_full_normalized = cls._normalize_alias(monitor_lower)
+
+        if monitor_name == query_raw:
+            return 0, "exact_name"
+        if monitor_lower == query_lower:
+            return 1, "case_insensitive_name"
+        if monitor_head == query_lower:
+            return 2, "short_hostname"
+        if query_lower in monitor_head_tokens:
+            return 3, "short_hostname_token"
+        if query_normalized and query_normalized == monitor_head_normalized:
+            return 4, "short_hostname_normalized"
+        if query_normalized and query_normalized in monitor_head_token_normalized:
+            return 5, "short_hostname_token_normalized"
+        if query_normalized and query_normalized == monitor_full_normalized:
+            return 6, "full_name_normalized"
+
+        return None
+
+    def check_node_status(self, node_name: str, timeout_ms: int | None = None) -> dict[str, Any]:
+        safe_node_name = self.validate_node_name(node_name)
+        safe_timeout_ms = self.default_timeout_ms if timeout_ms is None else self.validate_timeout_ms(timeout_ms)
+
+        nodes_payload = self._request_json_with_base(
+            base_url=self.kuma_api_base_url,
+            source_name="Kuma status API",
+            path="status-page/nodes",
+            params={},
+            timeout_ms=safe_timeout_ms,
+        )
+        groups = nodes_payload.get("publicGroupList")
+        if not isinstance(groups, list):
+            raise MCStatusApiError("Kuma status API returned unexpected payload for status-page/nodes.")
+
+        ranked_matches: list[dict[str, Any]] = []
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            monitors = group.get("monitorList")
+            if not isinstance(monitors, list):
+                continue
+            for monitor in monitors:
+                if not isinstance(monitor, dict):
+                    continue
+                monitor_name = monitor.get("name")
+                monitor_id = monitor.get("id")
+                if not isinstance(monitor_name, str) or not isinstance(monitor_id, (int, str)):
+                    continue
+                name_match = self._match_kuma_node_name(safe_node_name, monitor_name)
+                if name_match is None:
+                    continue
+                match_priority, match_mode = name_match
+                ranked_matches.append(
+                    {
+                        "id": monitor_id,
+                        "name": monitor_name,
+                        "match_priority": match_priority,
+                        "matched_by": match_mode,
+                    }
+                )
+
+        if not ranked_matches:
+            return {
+                "ok": False,
+                "input_node_name": safe_node_name,
+                "error": "Node with this name/alias was not found on Kuma status page.",
+            }
+
+        best_match_priority = min(match["match_priority"] for match in ranked_matches)
+        matches = [match for match in ranked_matches if match["match_priority"] == best_match_priority]
+        if len(matches) > 1:
+            return {
+                "ok": False,
+                "input_node_name": safe_node_name,
+                "error": (
+                    "Multiple nodes matched this name/alias at the same confidence level. "
+                    "Use a more specific node name."
+                ),
+                "matches": matches,
+            }
+
+        monitor = matches[0]
+        monitor_id_str = str(monitor["id"])
+        heartbeat_payload = self._request_json_with_base(
+            base_url=self.kuma_api_base_url,
+            source_name="Kuma status API",
+            path="status-page/heartbeat/nodes",
+            params={},
+            timeout_ms=safe_timeout_ms,
+        )
+        heartbeat_list = heartbeat_payload.get("heartbeatList")
+        if not isinstance(heartbeat_list, dict):
+            raise MCStatusApiError("Kuma status API returned unexpected payload for status-page/heartbeat/nodes.")
+
+        heartbeat_entries = heartbeat_list.get(monitor_id_str)
+        latest_heartbeat: dict[str, Any] | None = None
+        if isinstance(heartbeat_entries, list) and heartbeat_entries:
+            candidate = heartbeat_entries[0]
+            if isinstance(candidate, dict):
+                latest_heartbeat = candidate
+
+        status_code = latest_heartbeat.get("status") if latest_heartbeat else None
+        status_label = self._map_kuma_status(status_code)
+        return {
+            "ok": True,
+            "input_node_name": safe_node_name,
+            "node_name": monitor["name"],
+            "node_id": monitor["id"],
+            "matched_by": monitor["matched_by"],
+            "status": status_label,
+            "status_code": status_code,
+            "heartbeat_time": latest_heartbeat.get("time") if latest_heartbeat else None,
+            "message": latest_heartbeat.get("msg") if latest_heartbeat else None,
+            "ping": latest_heartbeat.get("ping") if latest_heartbeat else None,
+            "has_heartbeat": latest_heartbeat is not None,
+            "matched_by_case_insensitive_name": monitor["matched_by"] != "exact_name",
+        }
 
     def get_minecraft_status(
         self,

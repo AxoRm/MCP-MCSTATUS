@@ -192,6 +192,18 @@ class BgpInfoTool(BaseMCStatusTool):
         return self._structured(self.api_client.get_bgp_info(ip=ip, timeout_ms=timeout_ms))
 
 
+class CheckNodeStatusTool(BaseMCStatusTool):
+    name = "check_node_status"
+    description = (
+        "Check node status in Kuma by node name or short alias (e.g., s3, br4). "
+        "Args: node_name (str, required), timeout_ms (int, optional). "
+        "Returns UP/DOWN/PENDING/MAINTENANCE with match metadata; on ambiguous alias returns matches."
+    )
+
+    def invoke(self, node_name: str, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> dict[str, Any]:
+        return self._structured(self.api_client.check_node_status(node_name=node_name, timeout_ms=timeout_ms))
+
+
 def build_default_tools(api_client: MCStatusApiClient) -> list[BaseMCStatusTool]:
     return [
         MinecraftStatusTool(api_client),
@@ -204,4 +216,5 @@ def build_default_tools(api_client: MCStatusApiClient) -> list[BaseMCStatusTool]
         IpProviderInfoTool(api_client),
         IsIpAnycastTool(api_client),
         BgpInfoTool(api_client),
+        CheckNodeStatusTool(api_client),
     ]

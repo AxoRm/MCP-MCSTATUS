@@ -4,14 +4,12 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="a0779884-238e-4c25-8937-76d755e5abeb" name="Changes" comment="">
-      <change afterPath="$PROJECT_DIR$/.idea/MCP-MCSTATUS.iml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/inspectionProfiles/profiles_settings.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/misc.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/modules.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/vcs.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/main.py" afterDir="false" />
+    <list default="true" id="a0779884-238e-4c25-8937-76d755e5abeb" name="Changes" comment="main commit">
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/mcstatus_mcp/client.py" beforeDir="false" afterPath="$PROJECT_DIR$/mcstatus_mcp/client.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/mcstatus_mcp/server.py" beforeDir="false" afterPath="$PROJECT_DIR$/mcstatus_mcp/server.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/mcstatus_mcp/tools.py" beforeDir="false" afterPath="$PROJECT_DIR$/mcstatus_mcp/tools.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -19,11 +17,24 @@
     <option name="LAST_RESOLUTION" value="IGNORE" />
   </component>
   <component name="EmbeddingIndexingInfo">
-    <option name="cachedIndexableFilesCount" value="16" />
+    <option name="cachedIndexableFilesCount" value="17" />
   </component>
   <component name="Git.Settings">
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
+    <option name="UPDATE_TYPE" value="REBASE" />
   </component>
+  <component name="GitHubPullRequestSearchHistory">{
+  &quot;lastFilter&quot;: {
+    &quot;state&quot;: &quot;OPEN&quot;,
+    &quot;assignee&quot;: &quot;AxoRm&quot;
+  }
+}</component>
+  <component name="GithubPullRequestsUISettings">{
+  &quot;selectedUrlAndAccountId&quot;: {
+    &quot;url&quot;: &quot;https://github.com/AxoRm/MCP-MCSTATUS.git&quot;,
+    &quot;accountId&quot;: &quot;875e3f62-2650-4980-8c2f-5a9350932e1b&quot;
+  }
+}</component>
   <component name="McpProjectServerCommands">
     <commands />
     <urls />
@@ -72,11 +83,34 @@
       <updated>1771100394257</updated>
       <workItem from="1771100395378" duration="10474000" />
       <workItem from="1771153571489" duration="551000" />
-      <workItem from="1771464124880" duration="65000" />
+      <workItem from="1771464124880" duration="1401000" />
+      <workItem from="1771502342895" duration="2064000" />
     </task>
+    <task id="LOCAL-00001" summary=".gitignore">
+      <option name="closed" value="true" />
+      <created>1771464332117</created>
+      <option name="number" value="00001" />
+      <option name="presentableId" value="LOCAL-00001" />
+      <option name="project" value="LOCAL" />
+      <updated>1771464332117</updated>
+    </task>
+    <task id="LOCAL-00002" summary="main commit">
+      <option name="closed" value="true" />
+      <created>1771464346989</created>
+      <option name="number" value="00002" />
+      <option name="presentableId" value="LOCAL-00002" />
+      <option name="project" value="LOCAL" />
+      <updated>1771464346990</updated>
+    </task>
+    <option name="localTasksCounter" value="3" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
     <option name="version" value="3" />
+  </component>
+  <component name="VcsManagerConfiguration">
+    <MESSAGE value=".gitignore" />
+    <MESSAGE value="main commit" />
+    <option name="LAST_COMMIT_MESSAGE" value="main commit" />
   </component>
 </project>
