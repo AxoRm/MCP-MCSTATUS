@@ -4,12 +4,8 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="a0779884-238e-4c25-8937-76d755e5abeb" name="Changes" comment="main commit">
+    <list default="true" id="a0779884-238e-4c25-8937-76d755e5abeb" name="Changes" comment="add new tool (check nodes)">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/mcstatus_mcp/client.py" beforeDir="false" afterPath="$PROJECT_DIR$/mcstatus_mcp/client.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/mcstatus_mcp/server.py" beforeDir="false" afterPath="$PROJECT_DIR$/mcstatus_mcp/server.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/mcstatus_mcp/tools.py" beforeDir="false" afterPath="$PROJECT_DIR$/mcstatus_mcp/tools.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -84,7 +80,11 @@
       <workItem from="1771100395378" duration="10474000" />
       <workItem from="1771153571489" duration="551000" />
       <workItem from="1771464124880" duration="1401000" />
-      <workItem from="1771502342895" duration="2064000" />
+      <workItem from="1771502342895" duration="3868000" />
+      <workItem from="1771607042172" duration="605000" />
+      <workItem from="1771693742999" duration="655000" />
+      <workItem from="1771783937889" duration="1491000" />
+      <workItem from="1771848004201" duration="86000" />
     </task>
     <task id="LOCAL-00001" summary=".gitignore">
       <option name="closed" value="true" />
@@ -102,7 +102,15 @@
       <option name="project" value="LOCAL" />
       <updated>1771464346990</updated>
     </task>
-    <option name="localTasksCounter" value="3" />
+    <task id="LOCAL-00003" summary="add new tool (check nodes)">
+      <option name="closed" value="true" />
+      <created>1771506533786</created>
+      <option name="number" value="00003" />
+      <option name="presentableId" value="LOCAL-00003" />
+      <option name="project" value="LOCAL" />
+      <updated>1771506533786</updated>
+    </task>
+    <option name="localTasksCounter" value="4" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -111,6 +119,7 @@
   <component name="VcsManagerConfiguration">
     <MESSAGE value=".gitignore" />
     <MESSAGE value="main commit" />
-    <option name="LAST_COMMIT_MESSAGE" value="main commit" />
+    <MESSAGE value="add new tool (check nodes)" />
+    <option name="LAST_COMMIT_MESSAGE" value="add new tool (check nodes)" />
   </component>
 </project>

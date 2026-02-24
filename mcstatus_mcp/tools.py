@@ -159,7 +159,8 @@ class ReverseDnsTool(BaseMCStatusTool):
 
 class GeoIpMaxMindTool(BaseMCStatusTool):
     name = "geoip_maxmind"
-    description = "GeoIP lookup by IP using local MaxMind GeoLite2 database."
+    description = ( "GeoIP lookup by IP using local MaxMind GeoLite2 database."
+                    "Helps when need player GEO to check RKN / GOV internet blocks" )
 
     def invoke(self, ip: str, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> dict[str, Any]:
         return self._structured(self.api_client.get_geoip_maxmind(ip=ip, timeout_ms=timeout_ms))
@@ -177,7 +178,8 @@ class IsIpAnycastTool(BaseMCStatusTool):
     name = "is_ip_anycast"
     description = (
         "Check whether an IP is an Anycast node using the curated known-node list. "
-        "Use this when proxy protocol and bungee modes are disabled."
+        "Use this when proxy protocol and bungee modes are disabled and see client ip in logs."
+        "if client ip != not anycast => player dont connect via anycast"
     )
 
     def invoke(self, ip: str, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> dict[str, Any]:
