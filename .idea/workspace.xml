@@ -6,6 +6,7 @@
   <component name="ChangeListManager">
     <list default="true" id="a0779884-238e-4c25-8937-76d755e5abeb" name="Changes" comment="add new tool (check nodes)">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/mcstatus_mcp/client.py" beforeDir="false" afterPath="$PROJECT_DIR$/mcstatus_mcp/client.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -85,6 +86,8 @@
       <workItem from="1771693742999" duration="655000" />
       <workItem from="1771783937889" duration="1491000" />
       <workItem from="1771848004201" duration="86000" />
+      <workItem from="1772012647583" duration="164000" />
+      <workItem from="1772980200347" duration="57000" />
     </task>
     <task id="LOCAL-00001" summary=".gitignore">
       <option name="closed" value="true" />
