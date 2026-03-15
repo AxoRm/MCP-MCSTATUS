@@ -4,7 +4,6 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
-from mcp.types import CallToolResult
 
 from mcstatus_mcp.client import BEDROCK_DEFAULT_PORT, DEFAULT_TIMEOUT_MS, JAVA_DEFAULT_PORT, MCStatusApiClient
 
@@ -24,9 +23,9 @@ class BaseMCStatusTool(ABC):
         mcp.tool(name=self.name, description=self.description)(self.invoke)
 
     @staticmethod
-    def _structured(payload: dict[str, Any]) -> CallToolResult:
-        # Keep result machine-readable only; avoid duplicated JSON text content.
-        return CallToolResult(content=[], structuredContent=payload, isError=False)
+    def _structured(payload: dict[str, Any]) -> dict[str, Any]:
+        # Let FastMCP build both text content and structuredContent for broad client compatibility.
+        return payload
 
     @abstractmethod
     def invoke(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
@@ -197,9 +196,9 @@ class BgpInfoTool(BaseMCStatusTool):
 class CheckNodeStatusTool(BaseMCStatusTool):
     name = "check_node_status"
     description = (
-        "Check node status in Kuma by node name or short alias (e.g., s3, br4). "
+        "Check node status in Kuma by node name or smart alias (e.g., s3, br4, x 21, Node-x21). "
         "Args: node_name (str, required), timeout_ms (int, optional). "
-        "Returns UP/DOWN/PENDING/MAINTENANCE with match metadata; on ambiguous alias returns matches."
+        "Returns UP/DOWN/PENDING/MAINTENANCE with match metadata; on ambiguous alias returns statuses for all best matches."
     )
 
     def invoke(self, node_name: str, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> dict[str, Any]:

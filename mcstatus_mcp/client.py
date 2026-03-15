@@ -39,6 +39,27 @@ DEFAULT_BGPTOOLS_ASN_DB_PATH = "data/bgp_tools_asns.csv"
 DEFAULT_BGPTOOLS_ASN_REFRESH_HOURS = 24
 DEFAULT_BGPTOOLS_WHOIS_HOST = "bgp.tools"
 DEFAULT_BGPTOOLS_WHOIS_PORT = 43
+GENERIC_NODE_QUERY_TOKENS = frozenset(
+    {
+        "node",
+        "nodes",
+        "server",
+        "servers",
+        "srv",
+        "host",
+        "hostname",
+        "machine",
+        "нода",
+        "ноды",
+        "узел",
+        "узлы",
+        "сервер",
+        "сервера",
+        "серверы",
+        "хост",
+        "машина",
+    }
+)
 KNOWN_ANYCAST_PLAYER_NODES: dict[str, str] = {
     "169.150.255.56": "Германия",
     "143.244.45.11": "Украина",
@@ -536,41 +557,143 @@ class MCStatusApiClient:
         return "".join(char for char in value.strip().lower() if char.isalnum())
 
     @classmethod
-    def _match_kuma_node_name(cls, query_name: str, monitor_name: str) -> tuple[int, str] | None:
-        query_raw = query_name.strip()
-        query_lower = query_raw.lower()
-        query_normalized = cls._normalize_alias(query_raw)
-        monitor_lower = monitor_name.strip().lower()
-        monitor_head = monitor_lower.split(".", 1)[0]
-        monitor_head_tokens = [token for token in re.split(r"[\s_-]+", monitor_head) if token]
-        monitor_head_normalized = cls._normalize_alias(monitor_head)
-        monitor_head_token_normalized: set[str] = set()
-        for token in monitor_head_tokens:
-            normalized = cls._normalize_alias(token)
-            if normalized:
-                monitor_head_token_normalized.add(normalized)
-        monitor_full_normalized = cls._normalize_alias(monitor_lower)
+    def _strip_generic_node_prefix(cls, value: str) -> str:
+        normalized = value
+        while normalized:
+            if normalized in GENERIC_NODE_QUERY_TOKENS:
+                return ""
+            stripped = normalized
+            for generic_token in GENERIC_NODE_QUERY_TOKENS:
+                if normalized.startswith(generic_token) and len(normalized) > len(generic_token):
+                    suffix = normalized[len(generic_token):]
+                    if suffix and any(char.isdigit() for char in suffix):
+                        stripped = suffix
+                        break
+            if stripped == normalized:
+                return normalized
+            normalized = stripped
+        return normalized
 
-        if monitor_name == query_raw:
+    @staticmethod
+    def _normalize_alias_part(value: str) -> str:
+        if value.isdigit():
+            return value.lstrip("0") or "0"
+        return value
+
+    @classmethod
+    def _split_alias_parts(cls, value: str) -> list[str]:
+        return [cls._normalize_alias_part(part) for part in re.findall(r"[^\W\d_]+|\d+", value) if part]
+
+    @classmethod
+    def _core_alias_parts(cls, value: str) -> list[str]:
+        head = value.strip().lower().split(".", 1)[0]
+        raw_tokens = re.findall(r"[^\W_]+", head)
+        if not raw_tokens:
+            normalized = cls._normalize_alias(head)
+            normalized = cls._strip_generic_node_prefix(normalized)
+            return cls._split_alias_parts(normalized) if normalized else []
+
+        parts: list[str] = []
+        for token in raw_tokens:
+            normalized = cls._normalize_alias(token)
+            if not normalized:
+                continue
+            normalized = cls._strip_generic_node_prefix(normalized)
+            if not normalized:
+                continue
+            parts.extend(cls._split_alias_parts(normalized))
+        return parts
+
+    @classmethod
+    def _build_alias_signature(cls, value: str) -> dict[str, Any]:
+        raw = value.strip()
+        lower = raw.lower()
+        head = lower.split(".", 1)[0]
+        normalized = cls._normalize_alias(lower)
+        head_normalized = cls._normalize_alias(head)
+        core_parts = cls._core_alias_parts(lower)
+        return {
+            "raw": raw,
+            "lower": lower,
+            "head": head,
+            "normalized": normalized,
+            "head_normalized": head_normalized,
+            "core_parts": core_parts,
+            "core_fingerprint": "".join(core_parts),
+            "core_terms": set(core_parts),
+        }
+
+    @staticmethod
+    def _serialize_alias_signature(signature: dict[str, Any]) -> dict[str, Any]:
+        core_fingerprint = signature.get("core_fingerprint") or None
+        return {
+            "normalized": core_fingerprint or signature.get("head_normalized") or signature.get("normalized") or None,
+            "core_parts": list(signature.get("core_parts") or []),
+            "core_fingerprint": core_fingerprint,
+        }
+
+    @classmethod
+    def _match_kuma_node_name(cls, query_name: str, monitor_name: str) -> tuple[int, str] | None:
+        query_signature = cls._build_alias_signature(query_name)
+        monitor_signature = cls._build_alias_signature(monitor_name)
+
+        if monitor_name == query_signature["raw"]:
             return 0, "exact_name"
-        if monitor_lower == query_lower:
+        if monitor_signature["lower"] == query_signature["lower"]:
             return 1, "case_insensitive_name"
-        if monitor_head == query_lower:
+        if monitor_signature["head"] == query_signature["lower"]:
             return 2, "short_hostname"
-        if query_lower in monitor_head_tokens:
-            return 3, "short_hostname_token"
-        if query_normalized and query_normalized == monitor_head_normalized:
-            return 4, "short_hostname_normalized"
-        if query_normalized and query_normalized in monitor_head_token_normalized:
-            return 5, "short_hostname_token_normalized"
-        if query_normalized and query_normalized == monitor_full_normalized:
-            return 6, "full_name_normalized"
+        if query_signature["head_normalized"] and query_signature["head_normalized"] == monitor_signature["head_normalized"]:
+            return 3, "short_hostname_normalized"
+        if query_signature["normalized"] and query_signature["normalized"] == monitor_signature["normalized"]:
+            return 4, "full_name_normalized"
+        if (
+            query_signature["core_fingerprint"]
+            and query_signature["core_fingerprint"] == monitor_signature["core_fingerprint"]
+        ):
+            return 5, "core_fingerprint"
+        if query_signature["core_terms"] and query_signature["core_terms"].issubset(monitor_signature["core_terms"]):
+            return 6, "core_terms_subset"
 
         return None
+
+    @staticmethod
+    def _extract_latest_kuma_heartbeat(
+        heartbeat_list: dict[str, Any], monitor_id: int | str
+    ) -> dict[str, Any] | None:
+        heartbeat_entries = heartbeat_list.get(str(monitor_id))
+        if not isinstance(heartbeat_entries, list) or not heartbeat_entries:
+            return None
+        candidate = heartbeat_entries[0]
+        if isinstance(candidate, dict):
+            return candidate
+        return None
+
+    @classmethod
+    def _build_kuma_status_match(
+        cls, monitor: dict[str, Any], heartbeat_list: dict[str, Any]
+    ) -> dict[str, Any]:
+        latest_heartbeat = cls._extract_latest_kuma_heartbeat(heartbeat_list, monitor["id"])
+        status_code = latest_heartbeat.get("status") if latest_heartbeat else None
+        status_label = cls._map_kuma_status(status_code)
+        return {
+            "node_name": monitor["name"],
+            "node_id": monitor["id"],
+            "matched_by": monitor["matched_by"],
+            "match_priority": monitor["match_priority"],
+            "status": status_label,
+            "status_code": status_code,
+            "heartbeat_time": latest_heartbeat.get("time") if latest_heartbeat else None,
+            "message": latest_heartbeat.get("msg") if latest_heartbeat else None,
+            "ping": latest_heartbeat.get("ping") if latest_heartbeat else None,
+            "has_heartbeat": latest_heartbeat is not None,
+            "matched_by_case_insensitive_name": monitor["matched_by"] != "exact_name",
+        }
 
     def check_node_status(self, node_name: str, timeout_ms: int | None = None) -> dict[str, Any]:
         safe_node_name = self.validate_node_name(node_name)
         safe_timeout_ms = self.default_timeout_ms if timeout_ms is None else self.validate_timeout_ms(timeout_ms)
+        query_signature = self._build_alias_signature(safe_node_name)
 
         nodes_payload = self._request_json_with_base(
             base_url=self.kuma_api_base_url,
@@ -614,24 +737,15 @@ class MCStatusApiClient:
             return {
                 "ok": False,
                 "input_node_name": safe_node_name,
+                "interpreted_query": self._serialize_alias_signature(query_signature),
                 "error": "Node with this name/alias was not found on Kuma status page.",
             }
 
         best_match_priority = min(match["match_priority"] for match in ranked_matches)
-        matches = [match for match in ranked_matches if match["match_priority"] == best_match_priority]
-        if len(matches) > 1:
-            return {
-                "ok": False,
-                "input_node_name": safe_node_name,
-                "error": (
-                    "Multiple nodes matched this name/alias at the same confidence level. "
-                    "Use a more specific node name."
-                ),
-                "matches": matches,
-            }
-
-        monitor = matches[0]
-        monitor_id_str = str(monitor["id"])
+        matches = sorted(
+            (match for match in ranked_matches if match["match_priority"] == best_match_priority),
+            key=lambda match: (str(match["name"]).lower(), str(match["id"])),
+        )
         heartbeat_payload = self._request_json_with_base(
             base_url=self.kuma_api_base_url,
             source_name="Kuma status API",
@@ -643,28 +757,26 @@ class MCStatusApiClient:
         if not isinstance(heartbeat_list, dict):
             raise MCStatusApiError("Kuma status API returned unexpected payload for status-page/heartbeat/nodes.")
 
-        heartbeat_entries = heartbeat_list.get(monitor_id_str)
-        latest_heartbeat: dict[str, Any] | None = None
-        if isinstance(heartbeat_entries, list) and heartbeat_entries:
-            candidate = heartbeat_entries[0]
-            if isinstance(candidate, dict):
-                latest_heartbeat = candidate
+        resolved_matches = [self._build_kuma_status_match(monitor=match, heartbeat_list=heartbeat_list) for match in matches]
 
-        status_code = latest_heartbeat.get("status") if latest_heartbeat else None
-        status_label = self._map_kuma_status(status_code)
+        if len(resolved_matches) > 1:
+            return {
+                "ok": True,
+                "input_node_name": safe_node_name,
+                "interpreted_query": self._serialize_alias_signature(query_signature),
+                "ambiguous": True,
+                "match_count": len(resolved_matches),
+                "match_priority": best_match_priority,
+                "matched_by_modes": sorted({match["matched_by"] for match in resolved_matches}),
+                "matches": resolved_matches,
+            }
+
+        match = resolved_matches[0]
         return {
             "ok": True,
             "input_node_name": safe_node_name,
-            "node_name": monitor["name"],
-            "node_id": monitor["id"],
-            "matched_by": monitor["matched_by"],
-            "status": status_label,
-            "status_code": status_code,
-            "heartbeat_time": latest_heartbeat.get("time") if latest_heartbeat else None,
-            "message": latest_heartbeat.get("msg") if latest_heartbeat else None,
-            "ping": latest_heartbeat.get("ping") if latest_heartbeat else None,
-            "has_heartbeat": latest_heartbeat is not None,
-            "matched_by_case_insensitive_name": monitor["matched_by"] != "exact_name",
+            "interpreted_query": self._serialize_alias_signature(query_signature),
+            **match,
         }
 
     def get_minecraft_status(

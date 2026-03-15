@@ -32,6 +32,8 @@ Supported alias patterns:
 - token from short name split by `-`, `_`, or space: `br4`
 - case-insensitive variants: `BR4`
 - normalized alias (non-alphanumeric chars ignored in fallback matching)
+- interpreted noisy aliases with generic prefixes: `Node-x21`, `node x 21`, `Nodex21`, `Нода-x21` -> `x21.oinserver.xyz`
+- plain separated aliases also work: `x 21` -> `x21.oinserver.xyz`
 
 Status mapping:
 
@@ -45,13 +47,19 @@ Result format (`ok = true`):
 ```json
 {
   "ok": true,
-  "input_node_name": "s3",
-  "node_name": "s3.joinserver.xyz",
-  "node_id": 124,
-  "matched_by": "short_hostname",
+  "input_node_name": "x 21",
+  "interpreted_query": {
+    "normalized": "x21",
+    "core_parts": ["x", "21"],
+    "core_fingerprint": "x21"
+  },
+  "node_name": "x21.oinserver.xyz",
+  "node_id": 386,
+  "matched_by": "short_hostname_normalized",
+  "match_priority": 3,
   "status": "DOWN",
   "status_code": 0,
-  "heartbeat_time": "2026-02-19 11:48:48",
+  "heartbeat_time": "2026-03-15 13:52:53",
   "message": "",
   "ping": null,
   "has_heartbeat": true,
@@ -63,23 +71,61 @@ Result format (`ok = false`):
 
 - not found:
 ```json
-{"ok": false, "input_node_name": "unknown", "error": "Node with this name/alias was not found on Kuma status page."}
-```
-- ambiguous alias:
-```json
 {
   "ok": false,
-  "input_node_name": "hmfra1",
-  "error": "Multiple nodes matched this name/alias at the same confidence level. Use a more specific node name.",
-  "matches": [{"id": 305, "name": "HMFRA1-7950"}, {"id": 304, "name": "HMFRA1-R9"}]
+  "input_node_name": "unknown",
+  "interpreted_query": {
+    "normalized": "unknown",
+    "core_parts": ["unknown"],
+    "core_fingerprint": "unknown"
+  },
+  "error": "Node with this name/alias was not found on Kuma status page."
+}
+```
+- broad or ambiguous alias:
+```json
+{
+  "ok": true,
+  "input_node_name": "fra",
+  "interpreted_query": {
+    "normalized": "fra",
+    "core_parts": ["fra"],
+    "core_fingerprint": "fra"
+  },
+  "ambiguous": true,
+  "match_count": 2,
+  "match_priority": 6,
+  "matched_by_modes": ["core_terms_subset"],
+  "matches": [
+    {
+      "node_name": "fra9.joinserver.xyz",
+      "node_id": 245,
+      "matched_by": "core_terms_subset",
+      "match_priority": 6,
+      "status": "UP",
+      "status_code": 1
+    },
+    {
+      "node_name": "MySQL-FRA9",
+      "node_id": 290,
+      "matched_by": "core_terms_subset",
+      "match_priority": 6,
+      "status": "UP",
+      "status_code": 1
+    }
+  ]
 }
 ```
 
 GPT usage flow:
 
-1. Try short alias first (`s3`, `br4`, `fra28`).
-2. If ambiguous, retry with a more specific name from `matches`.
-3. If not found, retry with full node name.
+1. Try the best human string you have: `s3`, `br4`, `fra28`, `x 21`, `Node-x21`.
+2. If response contains `matches`, inspect returned statuses directly; broad queries now return all best matches.
+3. Only retry with a more specific name when you need a single exact node.
+
+Compatibility note:
+
+- MCP tool responses are returned as regular JSON payloads so FastMCP emits both text `content` and `structuredContent`, which avoids "returned no result" behavior in clients that ignore empty structured-only replies.
 
 ## Architecture
 
