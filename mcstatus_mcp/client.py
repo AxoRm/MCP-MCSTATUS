@@ -8,9 +8,11 @@ import os
 import re
 import shutil
 import socket
+import struct
 import tarfile
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -24,6 +26,9 @@ except ImportError:  # pragma: no cover - handled at runtime
 
 DEFAULT_API_BASE_URL = "https://mcstatus.xyz/api"
 DEFAULT_KUMA_API_BASE_URL = "http://status.dsts.cloud:3001/api"
+SIMPLE_VOICE_CHAT_DEFAULT_PORT = 24454
+SIMPLE_VOICE_CHAT_PING_CHECK_ID = uuid.UUID("58bc9ae9-c7a8-45e4-a11c-efbb67199425")
+SIMPLE_VOICE_CHAT_PING_PAYLOAD_LENGTH = 24
 DEFAULT_TIMEOUT_MS = 4000
 JAVA_DEFAULT_PORT = 25565
 BEDROCK_DEFAULT_PORT = 19132
@@ -178,6 +183,42 @@ class MCStatusApiClient:
         if value <= 0:
             raise ValueError("`timeout_ms` must be > 0.")
         return value
+
+    @staticmethod
+    def validate_attempts(attempts: int) -> int:
+        value = int(attempts)
+        if not (1 <= value <= 10):
+            raise ValueError("`attempts` must be in range 1..10.")
+        return value
+
+    @staticmethod
+    def _encode_simple_voice_chat_ping(request_id: uuid.UUID, timestamp_ms: int) -> bytes:
+        payload = request_id.bytes + struct.pack(">q", int(timestamp_ms))
+        return (
+            bytes((0xFF,))
+            + SIMPLE_VOICE_CHAT_PING_CHECK_ID.bytes
+            + bytes((SIMPLE_VOICE_CHAT_PING_PAYLOAD_LENGTH,))
+            + payload
+        )
+
+    @staticmethod
+    def _is_matching_simple_voice_chat_pong(
+        data: bytes,
+        *,
+        request_id: uuid.UUID,
+        timestamp_ms: int,
+    ) -> bool:
+        if len(data) != SIMPLE_VOICE_CHAT_PING_PAYLOAD_LENGTH:
+            return False
+        return data[:16] == request_id.bytes and data[16:] == struct.pack(">q", int(timestamp_ms))
+
+    @staticmethod
+    def _resolve_udp_endpoint(host: str, port: int) -> tuple[int, tuple[Any, ...]]:
+        addresses = socket.getaddrinfo(host, port, type=socket.SOCK_DGRAM)
+        if not addresses:
+            raise socket.gaierror(f"No UDP address found for {host!r}.")
+        selected = next((address for address in addresses if address[0] == socket.AF_INET), addresses[0])
+        return selected[0], selected[4]
 
     @staticmethod
     def validate_refresh_hours(refresh_hours: int, *, field_name: str = "refresh_hours") -> int:
@@ -777,6 +818,142 @@ class MCStatusApiClient:
             "input_node_name": safe_node_name,
             "interpreted_query": self._serialize_alias_signature(query_signature),
             **match,
+        }
+
+    def check_voice_chat_status(
+        self,
+        host: str,
+        port: int = SIMPLE_VOICE_CHAT_DEFAULT_PORT,
+        timeout_ms: int = 1000,
+        attempts: int = 3,
+    ) -> dict[str, Any]:
+        safe_host = self.validate_host(host)
+        safe_port = self.validate_port(port)
+        safe_timeout_ms = self.validate_timeout_ms(timeout_ms)
+        safe_attempts = self.validate_attempts(attempts)
+
+        base_result: dict[str, Any] = {
+            "software": "simple_voice_chat",
+            "host": safe_host,
+            "port": safe_port,
+            "transport": "udp",
+            "timeout_ms": safe_timeout_ms,
+            "attempts_requested": safe_attempts,
+        }
+
+        try:
+            family, socket_address = self._resolve_udp_endpoint(safe_host, safe_port)
+        except OSError as exc:
+            return {
+                **base_result,
+                "ok": False,
+                "status": "error",
+                "reachable": None,
+                "probe_supported": True,
+                "attempts_sent": 0,
+                "responses_received": 0,
+                "error": "dns_resolution_failed",
+                "error_detail": str(exc),
+            }
+
+        results: list[dict[str, Any]] = []
+        latencies_ms: list[float] = []
+        valid_responses = 0
+        invalid_responses = 0
+        attempts_sent = 0
+
+        for attempt in range(1, safe_attempts + 1):
+            request_id = uuid.uuid4()
+            timestamp_ms = int(time.time() * 1000)
+            ping = self._encode_simple_voice_chat_ping(request_id, timestamp_ms)
+            started = time.perf_counter()
+            attempt_result: dict[str, Any] = {"attempt": attempt, "status": "timeout"}
+            udp_socket: socket.socket | None = None
+
+            try:
+                udp_socket = socket.socket(family, socket.SOCK_DGRAM)
+                udp_socket.settimeout(safe_timeout_ms / 1000)
+                udp_socket.connect(socket_address)
+                udp_socket.send(ping)
+                attempts_sent += 1
+
+                deadline = time.monotonic() + safe_timeout_ms / 1000
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise socket.timeout()
+                    udp_socket.settimeout(remaining)
+                    response = udp_socket.recv(1024)
+                    if not self._is_matching_simple_voice_chat_pong(
+                        response,
+                        request_id=request_id,
+                        timestamp_ms=timestamp_ms,
+                    ):
+                        invalid_responses += 1
+                        continue
+
+                    latency_ms = round((time.perf_counter() - started) * 1000, 2)
+                    valid_responses += 1
+                    latencies_ms.append(latency_ms)
+                    attempt_result = {
+                        "attempt": attempt,
+                        "status": "reply",
+                        "latency_ms": latency_ms,
+                        "response_bytes": len(response),
+                    }
+                    break
+            except (socket.timeout, TimeoutError):
+                attempt_result = {"attempt": attempt, "status": "timeout"}
+            except OSError as exc:
+                attempt_result = {
+                    "attempt": attempt,
+                    "status": "socket_error",
+                    "error": str(exc),
+                }
+            finally:
+                if udp_socket is not None:
+                    udp_socket.close()
+
+            results.append(attempt_result)
+
+        resolved_address = str(socket_address[0]) if socket_address else safe_host
+        response_summary: dict[str, Any] = {
+            **base_result,
+            "probe_supported": True,
+            "probe": "simple_voice_chat_external_ping_v1",
+            "resolved_address": resolved_address,
+            "attempts_sent": attempts_sent,
+            "responses_received": valid_responses,
+            "invalid_responses_received": invalid_responses,
+            "packet_loss_percent": (
+                round((attempts_sent - valid_responses) * 100 / attempts_sent, 2)
+                if attempts_sent > 0
+                else None
+            ),
+            "attempts": results,
+        }
+
+        if latencies_ms:
+            return {
+                **response_summary,
+                "ok": True,
+                "status": "online",
+                "reachable": True,
+                "latency_ms": round(sum(latencies_ms) / len(latencies_ms), 2),
+                "latency_min_ms": min(latencies_ms),
+                "latency_max_ms": max(latencies_ms),
+            }
+
+        return {
+            **response_summary,
+            "ok": False,
+            "status": "unconfirmed",
+            "reachable": None,
+            "error": "no_valid_ping_response",
+            "explanation": (
+                "No valid Simple Voice Chat pong was received. This can mean the service is offline, the UDP "
+                "route/firewall/proxy is wrong, the port is wrong, or the server has allow_pings disabled."
+            ),
         }
 
     def get_minecraft_status(

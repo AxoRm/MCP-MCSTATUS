@@ -15,6 +15,18 @@ MCP server (Python) with tools for `https://mcstatus.xyz/api` and Kuma status-pa
 - `is_ip_anycast` - check if player IP is Anycast by curated known-node list
 - `get_bgp_info` - BGP/ASN details for an IP, endpoint `/api/bgp`
 - `check_node_status` - find Kuma node by name or short alias (e.g., `s3`, `br4`) and return `UP/DOWN/PENDING/MAINTENANCE`
+- `check_voice_chat_status` - actively test a Simple Voice Chat UDP endpoint with the official external ping protocol
+
+## Voice Chat UDP Check
+
+`check_voice_chat_status` accepts:
+
+- `host` (`string`, required) - public voice-chat hostname or IP
+- `port` (`integer`, default `24454`) - public UDP port
+- `timeout_ms` (`integer`, default `1000`) - timeout per attempt
+- `attempts` (`integer`, default `3`, range `1..10`)
+
+The tool is specifically for Simple Voice Chat. It sends the official external ping v1 request and validates the echoed request UUID and timestamp. A valid response proves that the application answered through the tested UDP path. If there is no response, the result is `unconfirmed`, not `offline`: the server may be stopped, the address/firewall/proxy may be wrong, the port may be wrong, or `allow_pings` may be disabled.
 
 ## `check_node_status` For GPT
 
@@ -254,6 +266,7 @@ response = client.responses.create(
                 "is_ip_anycast",
                 "get_bgp_info",
                 "check_node_status",
+                "check_voice_chat_status",
             ],
         }
     ],

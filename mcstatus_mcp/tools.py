@@ -5,7 +5,13 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from mcstatus_mcp.client import BEDROCK_DEFAULT_PORT, DEFAULT_TIMEOUT_MS, JAVA_DEFAULT_PORT, MCStatusApiClient
+from mcstatus_mcp.client import (
+    BEDROCK_DEFAULT_PORT,
+    DEFAULT_TIMEOUT_MS,
+    JAVA_DEFAULT_PORT,
+    SIMPLE_VOICE_CHAT_DEFAULT_PORT,
+    MCStatusApiClient,
+)
 
 
 class BaseMCStatusTool(ABC):
@@ -205,6 +211,31 @@ class CheckNodeStatusTool(BaseMCStatusTool):
         return self._structured(self.api_client.check_node_status(node_name=node_name, timeout_ms=timeout_ms))
 
 
+class CheckVoiceChatStatusTool(BaseMCStatusTool):
+    name = "check_voice_chat_status"
+    description = (
+        "Actively test a Simple Voice Chat UDP endpoint with its official external ping protocol. "
+        "Args: host, UDP port, timeout_ms, and attempts. A valid pong proves that the "
+        "Simple Voice Chat application answered through the tested UDP path."
+    )
+
+    def invoke(
+        self,
+        host: str,
+        port: int = SIMPLE_VOICE_CHAT_DEFAULT_PORT,
+        timeout_ms: int = 1000,
+        attempts: int = 3,
+    ) -> dict[str, Any]:
+        return self._structured(
+            self.api_client.check_voice_chat_status(
+                host=host,
+                port=port,
+                timeout_ms=timeout_ms,
+                attempts=attempts,
+            )
+        )
+
+
 def build_default_tools(api_client: MCStatusApiClient) -> list[BaseMCStatusTool]:
     return [
         MinecraftStatusTool(api_client),
@@ -218,4 +249,5 @@ def build_default_tools(api_client: MCStatusApiClient) -> list[BaseMCStatusTool]
         IsIpAnycastTool(api_client),
         BgpInfoTool(api_client),
         CheckNodeStatusTool(api_client),
+        CheckVoiceChatStatusTool(api_client),
     ]
