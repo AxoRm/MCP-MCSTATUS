@@ -23,8 +23,11 @@ mcp = FastMCP(
     instructions=(
         "Tools for Minecraft server status, DNS/BGP, reverse DNS, MaxMind GeoIP, provider, Anycast checks, "
         "Kuma node status by name or short alias (like s3 or br4), and Simple Voice Chat UDP reachability. "
-        "Use these tools whenever host status, DNS/SRV, BGP, PTR, provider, geolocation, Anycast, node status, "
-        "or voice-chat UDP status info is needed."
+        "Call a tool only when its live observation materially answers the current problem and the exact required "
+        "public endpoint, IP, DNS hostname, or hosting-node alias is available. Internal service IDs, panel IDs, "
+        "URLs, unrelated website domains, arbitrary text and 0.0.0.0 are not valid status targets. A completed "
+        "negative observation such as offline or NXDOMAIN is useful evidence; unconfirmed, unavailable and "
+        "invalid_input are inconclusive and must not be presented as proof of an outage."
     ),
     host=os.getenv("MCP_HOST", "127.0.0.1"),
     port=_env_int("MCP_PORT", 8000),

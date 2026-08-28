@@ -64,8 +64,10 @@ class StatusToolBase(BaseMCStatusTool, ABC):
 class MinecraftStatusTool(StatusToolBase):
     name = "get_minecraft_status"
     description = (
-        "Get Minecraft server status from mcstatus.xyz /api/status. "
-        "Supports Java and Bedrock editions."
+        "Check an exact public Minecraft server endpoint. Use only when the ticket contains the actual public "
+        "Minecraft hostname/IP and port and its current reachability matters. Never pass a website URL, hosting "
+        "service ID, panel ID, node alias, bind address such as 0.0.0.0, or an unrelated domain. Supports Java and "
+        "Bedrock. `offline` is a conclusive negative observation; `unconfirmed`/`unavailable` is not proof of outage."
     )
 
     def invoke(
@@ -91,7 +93,11 @@ class MinecraftStatusTool(StatusToolBase):
 
 class JavaStatusTool(StatusToolBase):
     name = "get_java_status"
-    description = "Convenience wrapper for Java edition status lookup."
+    description = (
+        "Check an exact public Java Minecraft hostname/IP and port. Use only for a Java server reachability problem "
+        "with an endpoint explicitly present in ticket/service data. Do not pass service IDs, node names, URLs, "
+        "website domains, or 0.0.0.0. Prefer get_minecraft_status when the edition is uncertain."
+    )
 
     def invoke(
         self,
@@ -115,7 +121,10 @@ class JavaStatusTool(StatusToolBase):
 
 class BedrockStatusTool(StatusToolBase):
     name = "get_bedrock_status"
-    description = "Convenience wrapper for Bedrock edition status lookup."
+    description = (
+        "Check an exact public Bedrock Minecraft hostname/IP and UDP port (often 19132). Use only when Bedrock and "
+        "the endpoint are explicit. Do not pass service IDs, node names, URLs, website domains, or 0.0.0.0."
+    )
 
     def invoke(
         self,
@@ -135,7 +144,10 @@ class BedrockStatusTool(StatusToolBase):
 
 class SrvRecordsTool(BaseMCStatusTool):
     name = "get_srv_records"
-    description = "Get SRV records via mcstatus.xyz /api/srv."
+    description = (
+        "Read Minecraft SRV records for an exact real DNS hostname when connection through a domain without a port "
+        "is relevant. Never pass an internal service/panel ID, URL, arbitrary text, or raw IP."
+    )
 
     def invoke(
         self,
@@ -148,7 +160,11 @@ class SrvRecordsTool(BaseMCStatusTool):
 
 class ResolveDnsTool(BaseMCStatusTool):
     name = "resolve_dns"
-    description = "Resolve DNS and provider info via mcstatus.xyz /api/dns."
+    description = (
+        "Resolve an exact real DNS hostname when the ticket is specifically about DNS or domain resolution. Never "
+        "use it merely because a domain appears in service data, and never pass an internal service ID, URL, "
+        "arbitrary text, or 0.0.0.0. NXDOMAIN is a valid negative result; unavailable is inconclusive."
+    )
 
     def invoke(self, host: str, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> dict[str, Any]:
         return self._structured(self.api_client.resolve_dns(host=host, timeout_ms=timeout_ms))
@@ -202,9 +218,12 @@ class BgpInfoTool(BaseMCStatusTool):
 class CheckNodeStatusTool(BaseMCStatusTool):
     name = "check_node_status"
     description = (
-        "Check node status in Kuma by node name or smart alias (e.g., s3, br4, x 21, Node-x21). "
+        "Check a Hosting-Minecraft infrastructure node in Kuma by its exact node name or smart alias "
+        "(e.g., s3, br4, x 21, Node-x21). Use only for an actual hosting-node incident. Never pass a customer "
+        "service ID, public game address, website domain, IP address, or location without a node identifier. "
         "Args: node_name (str, required), timeout_ms (int, optional). "
-        "Returns UP/DOWN/PENDING/MAINTENANCE with match metadata; on ambiguous alias returns statuses for all best matches."
+        "Returns UP/DOWN/PENDING/MAINTENANCE with match metadata; unknown_node means the alias was not in Kuma and "
+        "unavailable means the check was inconclusive."
     )
 
     def invoke(self, node_name: str, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> dict[str, Any]:

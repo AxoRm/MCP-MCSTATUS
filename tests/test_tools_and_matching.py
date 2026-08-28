@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from typing import Any
 
-from mcstatus_mcp.client import MCStatusApiClient
+from mcstatus_mcp.client import MCStatusApiClient, MCStatusApiError
 from mcstatus_mcp.tools import CheckNodeStatusTool
 
 
@@ -61,6 +61,26 @@ class _FakeKumaApiClient(MCStatusApiClient):
         if path == "status-page/heartbeat/nodes":
             return self._heartbeat_payload
         raise AssertionError(f"Unexpected path: {path}")
+
+
+class _FakeStatusApiClient(MCStatusApiClient):
+    def __init__(self, response: dict[str, Any] | None = None, error: str | None = None) -> None:
+        super().__init__(base_url="https://example.invalid/api")
+        self.response = response
+        self.error = error
+        self.requests = 0
+
+    def _request_json(
+        self,
+        path: str,
+        params: dict[str, Any],
+        timeout_ms: int | None = None,
+    ) -> dict[str, Any]:
+        del path, params, timeout_ms
+        self.requests += 1
+        if self.error:
+            raise MCStatusApiError(self.error)
+        return dict(self.response or {})
 
 
 class ToolResultCompatibilityTests(unittest.TestCase):
@@ -164,7 +184,7 @@ class CheckNodeStatusBehaviorTests(unittest.TestCase):
                 self.assertEqual([match["node_name"] for match in result["matches"]], expected_names)
                 self.assertEqual(result["matched_by_modes"], ["core_terms_subset"])
 
-    def test_not_found_queries_return_interpreted_error_payload(self) -> None:
+    def test_not_found_queries_return_completed_unknown_node_payload(self) -> None:
         client = _FakeKumaApiClient()
         cases = [
             ("unknown x21", "unknownx21"),
@@ -174,9 +194,60 @@ class CheckNodeStatusBehaviorTests(unittest.TestCase):
         for query, expected_fingerprint in cases:
             with self.subTest(query=query):
                 result = client.check_node_status(query, timeout_ms=4000)
-                self.assertFalse(result["ok"])
+                self.assertTrue(result["ok"])
+                self.assertFalse(result["found"])
+                self.assertEqual(result["status"], "unknown_node")
                 self.assertEqual(result["interpreted_query"]["core_fingerprint"], expected_fingerprint)
-                self.assertIn("not found", result["error"].lower())
+                self.assertIn("not found", result["detail"].lower())
+
+
+class StructuredStatusBehaviorTests(unittest.TestCase):
+    def test_connection_refused_is_a_conclusive_offline_observation(self) -> None:
+        client = _FakeStatusApiClient(
+            {"ok": False, "error": "dial tcp 203.0.113.7:25565: connection refused"}
+        )
+
+        result = client.get_minecraft_status("play.example.com", port=25565)
+
+        self.assertEqual(result["status"], "offline")
+        self.assertFalse(result["reachable"])
+        self.assertTrue(result["observation_conclusive"])
+        self.assertEqual(result["diagnostic"], "connection_refused")
+
+    def test_timeout_is_completed_but_inconclusive(self) -> None:
+        client = _FakeStatusApiClient({"ok": False, "error": "probe timed out"})
+
+        result = client.get_minecraft_status("play.example.com", port=25565)
+
+        self.assertEqual(result["tool_execution"], "completed")
+        self.assertEqual(result["status"], "unconfirmed")
+        self.assertFalse(result["observation_conclusive"])
+
+    def test_upstream_failure_returns_structured_unavailable_result(self) -> None:
+        client = _FakeStatusApiClient(error="upstream unavailable")
+
+        result = client.get_minecraft_status("play.example.com", port=25565)
+
+        self.assertEqual(result["tool_execution"], "completed")
+        self.assertEqual(result["status"], "unavailable")
+        self.assertFalse(result["observation_conclusive"])
+
+    def test_internal_service_id_is_rejected_without_upstream_request(self) -> None:
+        client = _FakeStatusApiClient({"ok": True})
+
+        result = client.get_minecraft_status("Y6Phe3Kg_547570", port=25565)
+
+        self.assertEqual(result["status"], "invalid_input")
+        self.assertEqual(result["error_code"], "invalid_public_endpoint")
+        self.assertEqual(client.requests, 0)
+
+    def test_bind_address_is_rejected_without_upstream_request(self) -> None:
+        client = _FakeStatusApiClient({"ok": True})
+
+        result = client.get_minecraft_status("0.0.0.0", port=25565)
+
+        self.assertEqual(result["status"], "invalid_input")
+        self.assertEqual(client.requests, 0)
 
 
 if __name__ == "__main__":

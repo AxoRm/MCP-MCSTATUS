@@ -115,6 +115,8 @@ class MCStatusApiClient:
         self.bgptools_user_agent = (bgptools_user_agent or "").strip()
         self.bgptools_whois_host = bgptools_whois_host.strip() or DEFAULT_BGPTOOLS_WHOIS_HOST
         self.bgptools_whois_port = self.validate_port(bgptools_whois_port)
+        self._kuma_cache_lock = threading.Lock()
+        self._kuma_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
     @classmethod
     def from_environment(cls) -> MCStatusApiClient:
@@ -290,6 +292,17 @@ class MCStatusApiClient:
                 payload = response.read().decode("utf-8")
         except HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
+            # mcstatus.xyz intentionally returns a non-2xx status for some useful
+            # negative observations (for example connection_refused). Treat a
+            # valid JSON object as a tool result instead of losing its diagnostics.
+            try:
+                error_result = json.loads(body)
+            except json.JSONDecodeError:
+                error_result = None
+            if isinstance(error_result, dict) and source_name == "mcstatus API":
+                error_result.setdefault("upstream_http_status", exc.code)
+                error_result.setdefault("tool_execution", "completed")
+                return error_result
             raise MCStatusApiError(
                 f"{source_name} returned HTTP {exc.code} for {path}: {body}"
             ) from exc
@@ -322,6 +335,122 @@ class MCStatusApiClient:
         if isinstance(data, dict):
             data.pop("favicon", None)
         return payload
+
+    @staticmethod
+    def _invalid_public_target(host: str) -> str | None:
+        value = host.strip()
+        if "://" in value or any(character in value for character in "/?#@"):
+            return "Use a hostname or IP only, without a URL, path, query, or credentials."
+        try:
+            address = ipaddress.ip_address(value)
+        except ValueError:
+            if "_" in value:
+                return "Internal service IDs and underscore labels are not public hostnames."
+            if len(value) > 253:
+                return "Hostname is longer than the DNS limit."
+            labels = value.rstrip(".").split(".")
+            hostname_label = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
+            if not labels or any(not hostname_label.fullmatch(label) for label in labels):
+                return "Value is not a valid DNS hostname or IP address."
+            return None
+        if address.is_unspecified or address.is_loopback:
+            return "Unspecified and loopback addresses cannot be checked from the public MCP service."
+        return None
+
+    @staticmethod
+    def _diagnostic_text(payload: dict[str, Any]) -> str:
+        parts = [
+            payload.get("error"),
+            payload.get("error_detail"),
+            payload.get("detail"),
+            payload.get("message"),
+        ]
+        return " ".join(str(part) for part in parts if part).strip()
+
+    @classmethod
+    def _normalize_minecraft_status_failure(
+        cls,
+        payload: dict[str, Any],
+        *,
+        host: str,
+        port: int,
+        edition: str,
+    ) -> dict[str, Any]:
+        result = cls._sanitize_status_payload(dict(payload))
+        result.setdefault("host", host)
+        result.setdefault("port", port)
+        result.setdefault("edition", edition)
+        result.setdefault("tool_execution", "completed")
+        diagnostic = cls._diagnostic_text(result)
+        lowered = diagnostic.casefold()
+
+        if any(token in lowered for token in ("connection refused", "actively refused", "no route to host")):
+            status = "offline"
+            diagnostic_code = "connection_refused"
+            conclusive = True
+            reachable: bool | None = False
+        elif any(token in lowered for token in ("name or service not known", "getaddrinfo", "nxdomain", "dns")):
+            status = "unresolved"
+            diagnostic_code = "dns_resolution_failed"
+            conclusive = True
+            reachable = None
+        elif any(token in lowered for token in ("timed out", "timeout", "deadline exceeded")):
+            status = "unconfirmed"
+            diagnostic_code = "timeout"
+            conclusive = False
+            reachable = None
+        else:
+            status = "unavailable"
+            diagnostic_code = "upstream_error"
+            conclusive = False
+            reachable = None
+
+        original_error = result.pop("error", None)
+        if original_error and "detail" not in result:
+            result["detail"] = original_error
+        result.update(
+            {
+                "ok": status == "online",
+                "status": status,
+                "reachable": reachable,
+                "observation_conclusive": conclusive,
+                "diagnostic": diagnostic_code,
+            }
+        )
+        return result
+
+    def _request_kuma_cached(
+        self,
+        *,
+        path: str,
+        timeout_ms: int,
+        fresh_seconds: int,
+        stale_seconds: int = 300,
+    ) -> tuple[dict[str, Any], str, str | None]:
+        now = time.monotonic()
+        with self._kuma_cache_lock:
+            cached = self._kuma_cache.get(path)
+            if cached and now - cached[0] <= fresh_seconds:
+                return cached[1], "cache_fresh", None
+
+        try:
+            payload = self._request_json_with_base(
+                base_url=self.kuma_api_base_url,
+                source_name="Kuma status API",
+                path=path,
+                params={},
+                timeout_ms=max(timeout_ms, 8_000),
+            )
+        except MCStatusApiError as exc:
+            with self._kuma_cache_lock:
+                cached = self._kuma_cache.get(path)
+            if cached and now - cached[0] <= stale_seconds:
+                return cached[1], "cache_stale", str(exc)
+            raise
+
+        with self._kuma_cache_lock:
+            self._kuma_cache[path] = (now, payload)
+        return payload, "live", None
 
     def _build_maxmind_download_url(self) -> str:
         if not self.maxmind_license_key:
@@ -736,16 +865,32 @@ class MCStatusApiClient:
         safe_timeout_ms = self.default_timeout_ms if timeout_ms is None else self.validate_timeout_ms(timeout_ms)
         query_signature = self._build_alias_signature(safe_node_name)
 
-        nodes_payload = self._request_json_with_base(
-            base_url=self.kuma_api_base_url,
-            source_name="Kuma status API",
-            path="status-page/nodes",
-            params={},
-            timeout_ms=safe_timeout_ms,
-        )
+        try:
+            nodes_payload, nodes_source, nodes_warning = self._request_kuma_cached(
+                path="status-page/nodes",
+                timeout_ms=safe_timeout_ms,
+                fresh_seconds=300,
+            )
+        except MCStatusApiError as exc:
+            return {
+                "ok": False,
+                "tool_execution": "completed",
+                "status": "unavailable",
+                "observation_conclusive": False,
+                "input_node_name": safe_node_name,
+                "error_code": "kuma_unavailable",
+                "detail": str(exc),
+            }
         groups = nodes_payload.get("publicGroupList")
         if not isinstance(groups, list):
-            raise MCStatusApiError("Kuma status API returned unexpected payload for status-page/nodes.")
+            return {
+                "ok": False,
+                "tool_execution": "completed",
+                "status": "unavailable",
+                "observation_conclusive": False,
+                "input_node_name": safe_node_name,
+                "error_code": "invalid_kuma_nodes_payload",
+            }
 
         ranked_matches: list[dict[str, Any]] = []
         for group in groups:
@@ -776,10 +921,15 @@ class MCStatusApiClient:
 
         if not ranked_matches:
             return {
-                "ok": False,
+                "ok": True,
+                "tool_execution": "completed",
+                "status": "unknown_node",
+                "found": False,
+                "observation_conclusive": False,
                 "input_node_name": safe_node_name,
                 "interpreted_query": self._serialize_alias_signature(query_signature),
-                "error": "Node with this name/alias was not found on Kuma status page.",
+                "detail": "Node with this name/alias was not found on Kuma status page.",
+                "source": nodes_source,
             }
 
         best_match_priority = min(match["match_priority"] for match in ranked_matches)
@@ -787,16 +937,33 @@ class MCStatusApiClient:
             (match for match in ranked_matches if match["match_priority"] == best_match_priority),
             key=lambda match: (str(match["name"]).lower(), str(match["id"])),
         )
-        heartbeat_payload = self._request_json_with_base(
-            base_url=self.kuma_api_base_url,
-            source_name="Kuma status API",
-            path="status-page/heartbeat/nodes",
-            params={},
-            timeout_ms=safe_timeout_ms,
-        )
+        try:
+            heartbeat_payload, heartbeat_source, heartbeat_warning = self._request_kuma_cached(
+                path="status-page/heartbeat/nodes",
+                timeout_ms=safe_timeout_ms,
+                fresh_seconds=10,
+            )
+        except MCStatusApiError as exc:
+            return {
+                "ok": False,
+                "tool_execution": "completed",
+                "status": "unavailable",
+                "observation_conclusive": False,
+                "input_node_name": safe_node_name,
+                "error_code": "kuma_unavailable",
+                "detail": str(exc),
+                "source": nodes_source,
+            }
         heartbeat_list = heartbeat_payload.get("heartbeatList")
         if not isinstance(heartbeat_list, dict):
-            raise MCStatusApiError("Kuma status API returned unexpected payload for status-page/heartbeat/nodes.")
+            return {
+                "ok": False,
+                "tool_execution": "completed",
+                "status": "unavailable",
+                "observation_conclusive": False,
+                "input_node_name": safe_node_name,
+                "error_code": "invalid_kuma_heartbeat_payload",
+            }
 
         resolved_matches = [self._build_kuma_status_match(monitor=match, heartbeat_list=heartbeat_list) for match in matches]
 
@@ -810,6 +977,10 @@ class MCStatusApiClient:
                 "match_priority": best_match_priority,
                 "matched_by_modes": sorted({match["matched_by"] for match in resolved_matches}),
                 "matches": resolved_matches,
+                "tool_execution": "completed",
+                "observation_conclusive": all(match["has_heartbeat"] for match in resolved_matches),
+                "source": {"nodes": nodes_source, "heartbeats": heartbeat_source},
+                "warning": heartbeat_warning or nodes_warning,
             }
 
         match = resolved_matches[0]
@@ -818,6 +989,10 @@ class MCStatusApiClient:
             "input_node_name": safe_node_name,
             "interpreted_query": self._serialize_alias_signature(query_signature),
             **match,
+            "tool_execution": "completed",
+            "observation_conclusive": bool(match["has_heartbeat"]),
+            "source": {"nodes": nodes_source, "heartbeats": heartbeat_source},
+            "warning": heartbeat_warning or nodes_warning,
         }
 
     def check_voice_chat_status(
@@ -974,6 +1149,20 @@ class MCStatusApiClient:
             effective_port = BEDROCK_DEFAULT_PORT if safe_edition == "bedrock" else JAVA_DEFAULT_PORT
         safe_port = self.validate_port(effective_port)
 
+        invalid_target = self._invalid_public_target(safe_host)
+        if invalid_target:
+            return {
+                "ok": False,
+                "tool_execution": "completed",
+                "status": "invalid_input",
+                "observation_conclusive": False,
+                "host": safe_host,
+                "port": safe_port,
+                "edition": safe_edition,
+                "error_code": "invalid_public_endpoint",
+                "detail": invalid_target,
+            }
+
         params: dict[str, Any] = {
             "host": safe_host,
             "port": safe_port,
@@ -985,27 +1174,155 @@ class MCStatusApiClient:
             params["mode"] = self.validate_mode(mode)
             params["proto"] = self.validate_proto(proto)
 
-        response = self._request_json(path="status", params=params, timeout_ms=safe_timeout_ms)
-        return self._sanitize_status_payload(response)
+        try:
+            response = self._request_json(path="status", params=params, timeout_ms=safe_timeout_ms)
+        except MCStatusApiError as exc:
+            return {
+                "ok": False,
+                "tool_execution": "completed",
+                "status": "unavailable",
+                "reachable": None,
+                "observation_conclusive": False,
+                "host": safe_host,
+                "port": safe_port,
+                "edition": safe_edition,
+                "error_code": "mcstatus_upstream_unavailable",
+                "detail": str(exc),
+            }
+        sanitized = self._sanitize_status_payload(response)
+        if sanitized.get("ok") is False or sanitized.get("error"):
+            return self._normalize_minecraft_status_failure(
+                sanitized,
+                host=safe_host,
+                port=safe_port,
+                edition=safe_edition,
+            )
+        sanitized.setdefault("tool_execution", "completed")
+        sanitized.setdefault("status", "online")
+        sanitized.setdefault("reachable", True)
+        sanitized.setdefault("observation_conclusive", True)
+        return sanitized
 
     def get_srv_records(self, host: str, port: int = JAVA_DEFAULT_PORT, timeout_ms: int | None = None) -> dict[str, Any]:
         safe_host = self.validate_host(host)
         safe_port = self.validate_port(port)
         safe_timeout_ms = self.default_timeout_ms if timeout_ms is None else self.validate_timeout_ms(timeout_ms)
-        return self._request_json(
-            path="srv",
-            params={"host": safe_host, "port": safe_port},
-            timeout_ms=safe_timeout_ms,
-        )
+        invalid_target = self._invalid_public_target(safe_host)
+        if invalid_target:
+            return {
+                "ok": False,
+                "tool_execution": "completed",
+                "status": "invalid_input",
+                "observation_conclusive": False,
+                "host": safe_host,
+                "error_code": "invalid_public_hostname",
+                "detail": invalid_target,
+            }
+        try:
+            result = self._request_json(
+                path="srv",
+                params={"host": safe_host, "port": safe_port},
+                timeout_ms=safe_timeout_ms,
+            )
+        except MCStatusApiError as exc:
+            return {
+                "ok": False,
+                "tool_execution": "completed",
+                "status": "unavailable",
+                "observation_conclusive": False,
+                "host": safe_host,
+                "error_code": "srv_upstream_unavailable",
+                "detail": str(exc),
+            }
+        if result.get("ok") is False or result.get("error"):
+            detail = self._diagnostic_text(result)
+            lowered = detail.casefold()
+            if any(token in lowered for token in ("nxdomain", "not found", "no srv", "no record")):
+                return {
+                    **result,
+                    "ok": True,
+                    "tool_execution": "completed",
+                    "status": "nxdomain",
+                    "records": [],
+                    "observation_conclusive": True,
+                    "host": safe_host,
+                }
+            return {
+                **result,
+                "ok": False,
+                "tool_execution": "completed",
+                "status": "unavailable",
+                "observation_conclusive": False,
+                "host": safe_host,
+                "error_code": "srv_upstream_unavailable",
+                "detail": detail or "SRV lookup did not return a usable result.",
+            }
+        result.setdefault("tool_execution", "completed")
+        result.setdefault("observation_conclusive", True)
+        return result
 
     def resolve_dns(self, host: str, timeout_ms: int | None = None) -> dict[str, Any]:
         safe_host = self.validate_host(host)
         safe_timeout_ms = self.default_timeout_ms if timeout_ms is None else self.validate_timeout_ms(timeout_ms)
-        return self._request_json(
-            path="dns",
-            params={"host": safe_host},
-            timeout_ms=safe_timeout_ms,
-        )
+        invalid_target = self._invalid_public_target(safe_host)
+        if invalid_target:
+            return {
+                "ok": False,
+                "tool_execution": "completed",
+                "status": "invalid_input",
+                "resolved": None,
+                "observation_conclusive": False,
+                "host": safe_host,
+                "error_code": "invalid_public_hostname",
+                "detail": invalid_target,
+            }
+        try:
+            result = self._request_json(
+                path="dns",
+                params={"host": safe_host},
+                timeout_ms=safe_timeout_ms,
+            )
+            if result.get("ok") is False or result.get("error"):
+                raise MCStatusApiError(self._diagnostic_text(result) or "DNS lookup did not return a usable result.")
+            result.setdefault("tool_execution", "completed")
+            result.setdefault("observation_conclusive", True)
+            return result
+        except MCStatusApiError as upstream_error:
+            try:
+                addresses = sorted({item[4][0] for item in socket.getaddrinfo(safe_host, None)})
+            except socket.gaierror as exc:
+                return {
+                    "ok": True,
+                    "tool_execution": "completed",
+                    "status": "nxdomain",
+                    "resolved": False,
+                    "observation_conclusive": True,
+                    "host": safe_host,
+                    "source": "local_dns_fallback",
+                    "detail": str(exc),
+                }
+            except OSError as exc:
+                return {
+                    "ok": False,
+                    "tool_execution": "completed",
+                    "status": "unavailable",
+                    "resolved": None,
+                    "observation_conclusive": False,
+                    "host": safe_host,
+                    "error_code": "dns_lookup_unavailable",
+                    "detail": f"{upstream_error}; local fallback: {exc}",
+                }
+            return {
+                "ok": True,
+                "tool_execution": "completed",
+                "status": "resolved",
+                "resolved": True,
+                "observation_conclusive": True,
+                "host": safe_host,
+                "addresses": addresses,
+                "source": "local_dns_fallback",
+                "warning": str(upstream_error),
+            }
 
     def get_bgp_info(self, ip: str, timeout_ms: int | None = None) -> dict[str, Any]:
         safe_ip = self.validate_ip(ip)
